@@ -60,7 +60,7 @@ End Sub
 
 ```vb
 Option Explicit
-
+Public InboxEventHandlers As Collection
 Public Sub ManualStartup()
     Dim ns As Outlook.NameSpace
     Dim store As Outlook.Store
