@@ -1,298 +1,265 @@
-# Outlook Classic — Unified Inbox (VBA Macro)
+# Outlook Unified Inbox (VBA)
 
-A lightweight VBA macro for Outlook Classic that automatically copies incoming emails from all your accounts into a single unified inbox folder — in real time.
+A VBA macro for Outlook Classic that syncs emails from all account inboxes into a single unified folder in real time.
 
----
+## How It Works
 
-## The Problem
+- On startup, watches every account's inbox using `WithEvents` — new mail is copied to the unified folder instantly
+- A periodic timer sweeps all inboxes every 2 minutes to catch anything missed
+- On first run, prompts you to pick the target folder; saves the selection to the Windows registry
+- Checks the 100 most recent emails per inbox on each sweep
 
-Outlook Classic doesn't have a true unified inbox that works as an actual folder. The built-in "All Inboxes" favorites view is read-only and can't receive copied items. If you have multiple email accounts (Gmail, Exchange, etc.), you're stuck switching between inboxes manually.
+## Files
 
-## The Solution
+| File | Type | Purpose |
+|------|------|---------|
+| `ThisOutlookSession` | Built-in | Startup/quit hooks |
+| `modUnifiedSync` | Module | Timer, sync logic, folder management |
+| `clsInboxEvents` | Class Module | Per-inbox `WithEvents` watcher |
 
-This macro hooks into every account's inbox at startup and listens for new mail. When an email arrives in any inbox, it's automatically copied into a folder of your choice — giving you one place to read everything.
+## Installation
 
----
+1. Open Outlook, press **Alt+F11** to open the VBA Editor
+2. In the Project Explorer (left panel), expand **Project (VbaProject.OTM)**
+3. **Add the module:** Insert → Module → rename it to `modUnifiedSync` → paste contents of `modUnifiedSync.bas`
+4. **Add the class:** Insert → Class Module → press F4, set `Name` to `clsInboxEvents` → paste contents of `clsInboxEvents.cls`
+5. **Edit ThisOutlookSession:** double-click it → replace contents with `ThisOutlookSession.bas`
+6. Save (**Ctrl+S**), close and reopen Outlook
+7. On first launch you will be prompted to pick your unified folder — select it once and it is remembered
 
-## Features
+## Code
 
-- **Works with all account types** — Gmail (IMAP), Exchange, Outlook.com, POP3
-- **Language-proof** — works with Hebrew, Arabic, or any RTL/non-Latin Outlook installation
-- **Folder selection is persistent** — pick your unified folder once, it's remembered
-- **Automatically hooks all inboxes** on Outlook startup
-- **Batch-safe** — scans for all recently arrived emails on each trigger, so multiple emails arriving simultaneously are all copied
-- **Deduplication** based on sender, subject, and received time — no duplicates in the unified folder
-- **Handles IMAP download delays** with automatic retry
-
----
-
-## Setup
-
-### Step 1 — Open the VBA Editor
-
-Press `Alt + F11` in Outlook.
-
----
-
-### Step 2 — Create the Class Module
-
-1. In the left panel, right-click your project → **Insert → Class Module**
-2. Press `F4` → rename it to `clsInboxEvents`
-3. Paste the following code:
-
+### `ThisOutlookSession`
 ```vb
 Option Explicit
-Public WithEvents Items As Outlook.Items
 
-Private Sub Items_ItemAdd(ByVal Item As Object)
-    Debug.Print Now & " — New mail detected in " & Items.Parent.FolderPath
-    SyncRecentItems Items.Parent
+Private Sub Application_Startup()
+    InitWatchers
+    StartTimer
+    RunUnifiedSync
+End Sub
+
+Private Sub Application_Quit()
+    StopTimer
 End Sub
 ```
 
----
-
-### Step 3 — Create the Standard Module
-
-1. Right-click your project → **Insert → Module**
-2. Press `F4` → rename it to `modUnified`
-3. Paste the following code:
-
+### `clsInboxEvents`
 ```vb
 Option Explicit
-Public InboxEventHandlers As Collection
-Public Sub ManualStartup()
+
+Public WithEvents Items As Outlook.Items
+
+Private Sub Items_ItemAdd(ByVal Item As Object)
+    If TypeOf Item Is Outlook.MailItem Then
+        Dim unified As Outlook.Folder
+        Set unified = GetUnifiedFolder()
+        If unified Is Nothing Then Exit Sub
+
+        On Error Resume Next
+        SyncNewItem Item, unified
+        On Error GoTo 0
+    End If
+End Sub
+```
+
+### `modUnifiedSync`
+```vb
+Option Explicit
+
+#If VBA7 Then
+    Private Declare PtrSafe Function SetTimer Lib "user32" (ByVal hwnd As LongPtr, ByVal nIDEvent As LongPtr, ByVal uElapse As Long, ByVal lpTimerFunc As LongPtr) As LongPtr
+    Private Declare PtrSafe Function KillTimer Lib "user32" (ByVal hwnd As LongPtr, ByVal nIDEvent As LongPtr) As Long
+    Private timerID As LongPtr
+#Else
+    Private Declare Function SetTimer Lib "user32" (ByVal hwnd As Long, ByVal nIDEvent As Long, ByVal uElapse As Long, ByVal lpTimerFunc As Long) As Long
+    Private Declare Function KillTimer Lib "user32" (ByVal hwnd As Long, ByVal nIDEvent As Long) As Long
+    Private timerID As Long
+#End If
+
+Private watchers As New Collection
+Public isSyncRunning As Boolean
+Public lastSync As Date
+
+Public Sub InitWatchers()
     Dim ns As Outlook.NameSpace
     Dim store As Outlook.Store
     Dim inbox As Outlook.Folder
-    Dim handler As clsInboxEvents
+    Dim w As clsInboxEvents
 
     Set ns = Application.Session
-    Set InboxEventHandlers = New Collection
 
     For Each store In ns.Stores
+        Set inbox = Nothing
         On Error Resume Next
         Set inbox = store.GetDefaultFolder(olFolderInbox)
         On Error GoTo 0
+
         If Not inbox Is Nothing Then
-            Set handler = New clsInboxEvents
-            Set handler.Items = inbox.Items
-            InboxEventHandlers.Add handler
-            Debug.Print "Hooked: " & inbox.FolderPath
+            Set w = New clsInboxEvents
+            Set w.Items = inbox.Items
+            watchers.Add w
         End If
     Next store
-
-    Debug.Print Now & " — Total hooks: " & InboxEventHandlers.Count
 End Sub
 
-Public Sub SyncRecentItems(inbox As Outlook.Folder)
+Public Sub StartTimer()
+    StopTimer
+    timerID = SetTimer(0, 0, 120000, AddressOf TimerCallback)
+End Sub
+
+Public Sub StopTimer()
+    If timerID <> 0 Then
+        KillTimer 0, timerID
+        timerID = 0
+    End If
+End Sub
+
+#If VBA7 Then
+Public Sub TimerCallback(ByVal hwnd As LongPtr, ByVal uMsg As Long, ByVal idEvent As LongPtr, ByVal dwTime As Long)
+#Else
+Public Sub TimerCallback(ByVal hwnd As Long, ByVal uMsg As Long, ByVal idEvent As Long, ByVal dwTime As Long)
+#End If
+    RunUnifiedSync
+End Sub
+
+Public Sub RunUnifiedSync()
+    If isSyncRunning Then Exit Sub
+    If lastSync <> 0 And Now - lastSync < TimeValue("00:00:30") Then Exit Sub
+
+    isSyncRunning = True
+    lastSync = Now
+
+    On Error GoTo Cleanup
+    SyncAllInboxesToUnified
+
+Cleanup:
+    isSyncRunning = False
+End Sub
+
+Public Sub SyncAllInboxesToUnified()
+    Dim ns As Outlook.NameSpace
+    Dim store As Outlook.Store
+    Dim inbox As Outlook.Folder
+
+    Set ns = Application.Session
+
+    For Each store In ns.Stores
+        Set inbox = Nothing
+        On Error Resume Next
+        Set inbox = store.GetDefaultFolder(olFolderInbox)
+        On Error GoTo 0
+
+        If Not inbox Is Nothing Then
+            SyncInbox inbox
+        End If
+    Next store
+End Sub
+
+Public Sub SyncInbox(inbox As Outlook.Folder)
     Dim unified As Outlook.Folder
     Set unified = GetUnifiedFolder()
     If unified Is Nothing Then Exit Sub
 
-    Dim cutoff As Date
-    cutoff = Now - (5 / 1440)  ' last 5 minutes
+    Dim copied As Object
+    Set copied = CreateObject("Scripting.Dictionary")
 
-    Dim i As Integer
-    For i = inbox.Items.Count To 1 Step -1
-        Dim item As Object
-        Set item = inbox.Items(i)
+    Dim itm As Object
+    For Each itm In unified.Items
+        If TypeOf itm Is Outlook.MailItem Then
+            Dim uMail As Outlook.MailItem
+            Set uMail = itm
+            copied(uMail.Subject & "|" & Format(uMail.ReceivedTime, "yyyymmddhhnnss")) = True
+        End If
+    Next itm
 
-        If Not TypeOf item Is Outlook.MailItem Then GoTo NextItem
+    Dim inboxItems As Outlook.Items
+    Set inboxItems = inbox.Items
+    inboxItems.Sort "[ReceivedTime]", True
 
-        Dim mail As Outlook.MailItem
-        Set mail = item
+    Dim checked As Long
+    Dim i As Long
+    For i = 1 To inboxItems.Count
+        DoEvents
 
-        If mail.ReceivedTime < cutoff Then Exit For
+        Dim mailItem As Object
+        Set mailItem = inboxItems(i)
 
-        If Not IsAlreadyCopied(mail, unified) Then
+        If TypeOf mailItem Is Outlook.MailItem Then
+            Dim mail As Outlook.MailItem
+            Set mail = mailItem
+
+            checked = checked + 1
+            If checked > 100 Then Exit For
+
+            Dim mailKey As String
+            mailKey = mail.Subject & "|" & Format(mail.ReceivedTime, "yyyymmddhhnnss")
+
+            If copied.Exists(mailKey) Then Exit For
+
             SyncNewItem mail, unified
         End If
-
-NextItem:
     Next i
 End Sub
 
-Private Function IsAlreadyCopied(mail As Outlook.MailItem, unified As Outlook.Folder) As Boolean
-    Dim i As Integer
-    For i = 1 To unified.Items.Count
-        If Not TypeOf unified.Items(i) Is Outlook.MailItem Then GoTo Next_i
-        Dim existing As Outlook.MailItem
-        Set existing = unified.Items(i)
-        If existing.Subject = mail.Subject And _
-           existing.SenderEmailAddress = mail.SenderEmailAddress And _
-           Abs(existing.ReceivedTime - mail.ReceivedTime) < (1 / 1440) Then
-            IsAlreadyCopied = True
-            Exit Function
-        End If
-Next_i:
-    Next i
-    IsAlreadyCopied = False
-End Function
-
-Public Sub SyncNewItem(item As Outlook.MailItem, unified As Outlook.Folder)
-    Dim newItem As Outlook.MailItem
-
-    Dim i As Integer
-    For i = 1 To 10
-        On Error Resume Next
-        Set newItem = item.Copy
-        On Error GoTo 0
-        If Not newItem Is Nothing Then Exit For
-        Wait 1000
-    Next i
-
-    If newItem Is Nothing Then
-        Debug.Print Now & " — Copy failed: " & item.Subject
-        Exit Sub
-    End If
-
-    On Error Resume Next
-    newItem.Move unified
-    If Err.Number <> 0 Then
-        Debug.Print Now & " — Move failed: " & Err.Description
-    Else
-        Debug.Print Now & " — Copied: " & item.Subject
-    End If
-    On Error GoTo 0
+Public Sub SyncNewItem(mail As Outlook.MailItem, unified As Outlook.Folder)
+    Dim copyItem As Outlook.MailItem
+    Set copyItem = mail.Copy
+    copyItem.Move unified
 End Sub
 
 Public Function GetUnifiedFolder() As Outlook.Folder
+    Static cachedFolder As Outlook.Folder
     Dim ns As Outlook.NameSpace
-    Dim f As Outlook.Folder
-    Dim folderPath As String
-
     Set ns = Application.Session
-    folderPath = GetSetting("UnifiedSync", "Folders", "UnifiedPath", "")
 
-    If folderPath = "" Then
-        MsgBox "Select the unified folder you want new mail copied into.", vbInformation
-        Set f = ns.PickFolder
-        If f Is Nothing Then Exit Function
-        SaveSetting "UnifiedSync", "Folders", "UnifiedPath", f.FolderPath
-        Set GetUnifiedFolder = f
+    If Not cachedFolder Is Nothing Then
+        Set GetUnifiedFolder = cachedFolder
         Exit Function
     End If
 
-    On Error Resume Next
-    Dim parts() As String
-    Dim start As Long
-    parts = Split(folderPath, "\")
-    start = 0
-    Do While parts(start) = "" And start < UBound(parts)
-        start = start + 1
-    Loop
-    Set f = ns.Folders(parts(start))
-    Dim j As Long
-    For j = start + 1 To UBound(parts)
-        Set f = f.Folders(parts(j))
-    Next j
-    On Error GoTo 0
+    Dim folderID As String, storeID As String
+    folderID = GetSetting("UnifiedInbox", "Config", "FolderID", "")
+    storeID = GetSetting("UnifiedInbox", "Config", "StoreID", "")
 
-    If f Is Nothing Then
-        MsgBox "Unified folder not found. Please select it again.", vbExclamation
-        Set f = ns.PickFolder
-        If f Is Nothing Then Exit Function
-        SaveSetting "UnifiedSync", "Folders", "UnifiedPath", f.FolderPath
+    If folderID <> "" And storeID <> "" Then
+        On Error Resume Next
+        Set cachedFolder = ns.GetFolderFromID(folderID, storeID)
+        On Error GoTo 0
+        If Not cachedFolder Is Nothing Then
+            Set GetUnifiedFolder = cachedFolder
+            Exit Function
+        End If
     End If
 
-    Set GetUnifiedFolder = f
+    MsgBox "Please select the folder to use as your Unified Inbox.", vbInformation
+    Set cachedFolder = ns.PickFolder
+
+    If cachedFolder Is Nothing Then
+        MsgBox "No folder selected. Unified Inbox sync disabled.", vbExclamation
+        Exit Function
+    End If
+
+    SaveSetting "UnifiedInbox", "Config", "FolderID", cachedFolder.EntryID
+    SaveSetting "UnifiedInbox", "Config", "StoreID", cachedFolder.StoreID
+
+    Set GetUnifiedFolder = cachedFolder
 End Function
-
-Public Sub ResetUnifiedFolder()
-    On Error Resume Next
-    DeleteSetting "UnifiedSync", "Folders", "UnifiedPath"
-    On Error GoTo 0
-    Debug.Print "Folder reset — run TestUnified to pick a new one"
-End Sub
-
-Public Sub TestUnified()
-    Dim f As Outlook.Folder
-    Set f = GetUnifiedFolder()
-    If f Is Nothing Then
-        Debug.Print "No folder selected"
-    Else
-        Debug.Print "Unified folder: " & f.FolderPath
-    End If
-End Sub
-
-Public Sub Wait(ms As Long)
-    Dim t As Single
-    t = Timer
-    Do While Timer < t + (ms / 1000)
-        DoEvents
-    Loop
-End Sub
 ```
 
----
+## Resetting the Target Folder
 
-### Step 4 — Edit ThisOutlookSession
-
-1. In the left panel under **Microsoft Outlook Objects**, double-click `ThisOutlookSession`
-2. Paste the following:
+To pick a different unified folder, run this once in the VBA Immediate Window (**Ctrl+G**):
 
 ```vb
-Option Explicit
-Public InboxEventHandlers As Collection
-
-Private Sub Application_Startup()
-    ManualStartup
-End Sub
+DeleteSetting "UnifiedInbox", "Config"
 ```
 
----
-
-### Step 5 — Enable Macros
-
-In Outlook: **File → Options → Trust Center → Trust Center Settings → Macro Settings**
-
-Set to `Notifications for all macros` or `Enable all macros`.
-
----
-
-### Step 6 — First Run
-
-1. Create a folder in Outlook for your unified inbox (e.g. `All Mail`)
-2. Restart Outlook — the macro will start automatically
-3. On the first email arrival, a dialog will ask you to pick your unified folder
-4. Pick your folder — it's saved permanently from that point
-
-> Or run `TestUnified` manually from the VBA editor (`Alt+F11`) to pick the folder right away.
-
----
-
-## Troubleshooting
-
-**Macro doesn't run on startup**
-- Check macro security settings (Step 5)
-- Make sure `Application_Startup` is in `ThisOutlookSession`, not a regular module
-
-**Folder picker doesn't appear**
-- Run `ResetUnifiedFolder` in the VBA editor, then run `TestUnified`
-
-**Emails not copying**
-- Run `ManualStartup` manually to re-establish hooks
-- Check the Immediate window (`Ctrl+G`) for debug output
-
-**Multiple emails from the same sender not all appearing**
-- This was a known issue with batch IMAP sync — when several emails arrive at once, Outlook may only fire `ItemAdd` once for the batch. The macro now handles this by scanning the inbox for all items received in the last 5 minutes on each trigger, so all emails in a batch are captured. If you were on an older version, make sure you've updated both `clsInboxEvents` and `modUnified` with the latest code above.
-
-**Hebrew / RTL folder names not working**
-- The macro uses folder path traversal which is language-safe
-- If issues persist, run `ResetUnifiedFolder` and re-pick the folder
-
----
+Then restart Outlook — it will prompt you to pick again.
 
 ## Notes
 
-- Emails that arrive while Outlook is closed will be copied when Outlook reopens and syncs
-- The original email stays in its source inbox — only a copy is moved to the unified folder
-- This macro does not sync read/unread status between the copy and original
-- Deduplication is based on sender address, subject, and received time — not `EntryID`, which changes when an item is copied
-
----
-
-## License
-
-MIT
+- Emails are **copied** (not moved) from each inbox into the unified folder
+- The unified folder can be in any account or a local PST
+- Works with any number of accounts (Exchange, IMAP, POP3)
+- Requires macros to be enabled: File → Options → Trust Center → Macro Settings → Enable all macros
