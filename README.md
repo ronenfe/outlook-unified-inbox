@@ -1,3 +1,4 @@
+
 # Outlook Unified Inbox (VBA)
 
 A VBA macro for Outlook Classic that syncs emails from all account inboxes into a single unified folder in real time.
@@ -8,6 +9,7 @@ A VBA macro for Outlook Classic that syncs emails from all account inboxes into 
 - A periodic timer sweeps all inboxes every 5 minutes to catch anything missed
 - On first run, prompts you to pick the target folder; saves the selection to the Windows registry
 - Checks the 100 most recent emails per inbox on each sweep
+- Snapshots inbox EntryIDs before processing — never mutates a live collection mid-loop
 
 ## Files
 
@@ -21,9 +23,9 @@ A VBA macro for Outlook Classic that syncs emails from all account inboxes into 
 
 1. Open Outlook, press **Alt+F11** to open the VBA Editor
 2. In the Project Explorer (left panel), expand **Project (VbaProject.OTM)**
-3. **Add the module:** Insert → Module → rename it to `modUnifiedSync` → paste contents of `modUnifiedSync.bas`
-4. **Add the class:** Insert → Class Module → press F4, set `Name` to `clsInboxEvents` → paste contents of `clsInboxEvents.cls`
-5. **Edit ThisOutlookSession:** double-click it → replace contents with `ThisOutlookSession.bas`
+3. **Add the module:** Insert → Module → rename to `modUnifiedSync` → paste contents below
+4. **Add the class:** Insert → Class Module → press F4, set `Name` to `clsInboxEvents` → paste contents below
+5. **Edit ThisOutlookSession:** double-click it → replace all contents with the code below
 6. Save (**Ctrl+S**), close and reopen Outlook
 7. On first launch you will be prompted to pick your unified folder — select it once and it is remembered
 
@@ -125,7 +127,7 @@ End Sub
 
 Public Sub RunUnifiedSync()
     If isSyncRunning Then Exit Sub
-    If lastSync <> 0 And Now - lastSync < TimeValue("00:01:00") Then Exit Sub ' 1 minute cooldown
+    If lastSync <> 0 And Now - lastSync < TimeValue("00:01:00") Then Exit Sub
 
     isSyncRunning = True
     lastSync = Now
@@ -164,7 +166,7 @@ Public Sub SyncInbox(inbox As Outlook.Folder)
     Dim ns As Outlook.NameSpace
     Set ns = Application.Session
 
-    ' Snapshot unified folder keys (capped at 200) without iterating live during sync
+    ' Snapshot unified folder keys (capped at 200)
     Dim copied As Object
     Set copied = CreateObject("Scripting.Dictionary")
 
@@ -187,14 +189,13 @@ Public Sub SyncInbox(inbox As Outlook.Folder)
         End If
     Next j
 
-    ' Snapshot inbox EntryIDs first — never mutate a live collection while iterating
+    ' Snapshot inbox EntryIDs — never mutate a live collection while iterating
     Dim inboxItems As Outlook.Items
     Set inboxItems = inbox.Items
     inboxItems.Sort "[ReceivedTime]", True
 
-    Dim entryIDs() As String
+    Dim entryIDs(99) As String
     Dim candidateCount As Long
-    ReDim entryIDs(99)
 
     Dim i As Long
     For i = 1 To inboxItems.Count
@@ -207,12 +208,12 @@ Public Sub SyncInbox(inbox As Outlook.Folder)
         End If
     Next i
 
-    ' Now process candidates outside the live loop
+    ' Process candidates outside the live loop
     Dim k As Long
     For k = 0 To candidateCount - 1
         DoEvents
-        On Error Resume Next
         Dim mail As Outlook.MailItem
+        On Error Resume Next
         Set mail = ns.GetItemFromID(entryIDs(k))
         On Error GoTo 0
 
@@ -228,7 +229,7 @@ End Sub
 Public Sub SyncNewItem(mail As Outlook.MailItem, unified As Outlook.Folder)
     Dim copyItem As Outlook.MailItem
     Set copyItem = mail.Copy
-    copyItem.Save      ' commit the copy before moving — prevents original deletion bug
+    copyItem.Save
     copyItem.Move unified
     Set copyItem = Nothing
 End Sub
@@ -287,4 +288,5 @@ Then restart Outlook — it will prompt you to pick again.
 - Emails are **copied** (not moved) from each inbox into the unified folder
 - The unified folder can be in any account or a local PST
 - Works with any number of accounts (Exchange, IMAP, POP3)
+- The periodic sweep stops scanning an inbox as soon as it hits an already-synced email — if you manually delete emails from the unified folder they will not be re-synced on the next sweep (only future new arrivals are caught via `ItemAdd`)
 - Requires macros to be enabled: File → Options → Trust Center → Macro Settings → Enable all macros
