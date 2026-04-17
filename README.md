@@ -105,7 +105,7 @@ End Sub
 
 Public Sub StartTimer()
     StopTimer
-    timerID = SetTimer(0, 0, 120000, AddressOf TimerCallback)
+    timerID = SetTimer(0, 0, 300000, AddressOf TimerCallback) ' 5 minutes
 End Sub
 
 Public Sub StopTimer()
@@ -125,7 +125,7 @@ End Sub
 
 Public Sub RunUnifiedSync()
     If isSyncRunning Then Exit Sub
-    If lastSync <> 0 And Now - lastSync < TimeValue("00:00:30") Then Exit Sub
+    If lastSync <> 0 And Now - lastSync < TimeValue("00:01:00") Then Exit Sub ' 1 minute cooldown
 
     isSyncRunning = True
     lastSync = Now
@@ -161,51 +161,76 @@ Public Sub SyncInbox(inbox As Outlook.Folder)
     Set unified = GetUnifiedFolder()
     If unified Is Nothing Then Exit Sub
 
+    Dim ns As Outlook.NameSpace
+    Set ns = Application.Session
+
+    ' Snapshot unified folder keys (capped at 200) without iterating live during sync
     Dim copied As Object
     Set copied = CreateObject("Scripting.Dictionary")
 
-    Dim itm As Object
-    For Each itm In unified.Items
-        If TypeOf itm Is Outlook.MailItem Then
+    Dim uItems As Outlook.Items
+    Set uItems = unified.Items
+    uItems.Sort "[ReceivedTime]", True
+
+    Dim uLimit As Long
+    uLimit = uItems.Count
+    If uLimit > 200 Then uLimit = 200
+
+    Dim j As Long
+    For j = 1 To uLimit
+        Dim uItm As Object
+        Set uItm = uItems(j)
+        If TypeOf uItm Is Outlook.MailItem Then
             Dim uMail As Outlook.MailItem
-            Set uMail = itm
+            Set uMail = uItm
             copied(uMail.Subject & "|" & Format(uMail.ReceivedTime, "yyyymmddhhnnss")) = True
         End If
-    Next itm
+    Next j
 
+    ' Snapshot inbox EntryIDs first — never mutate a live collection while iterating
     Dim inboxItems As Outlook.Items
     Set inboxItems = inbox.Items
     inboxItems.Sort "[ReceivedTime]", True
 
-    Dim checked As Long
+    Dim entryIDs() As String
+    Dim candidateCount As Long
+    ReDim entryIDs(99)
+
     Dim i As Long
     For i = 1 To inboxItems.Count
-        DoEvents
-
-        Dim mailItem As Object
-        Set mailItem = inboxItems(i)
-
-        If TypeOf mailItem Is Outlook.MailItem Then
-            Dim mail As Outlook.MailItem
-            Set mail = mailItem
-
-            checked = checked + 1
-            If checked > 100 Then Exit For
-
-            Dim mailKey As String
-            mailKey = mail.Subject & "|" & Format(mail.ReceivedTime, "yyyymmddhhnnss")
-
-            If copied.Exists(mailKey) Then Exit For
-
-            SyncNewItem mail, unified
+        Dim itm As Object
+        Set itm = inboxItems(i)
+        If TypeOf itm Is Outlook.MailItem Then
+            entryIDs(candidateCount) = itm.EntryID
+            candidateCount = candidateCount + 1
+            If candidateCount >= 100 Then Exit For
         End If
     Next i
+
+    ' Now process candidates outside the live loop
+    Dim k As Long
+    For k = 0 To candidateCount - 1
+        DoEvents
+        On Error Resume Next
+        Dim mail As Outlook.MailItem
+        Set mail = ns.GetItemFromID(entryIDs(k))
+        On Error GoTo 0
+
+        If Not mail Is Nothing Then
+            Dim mailKey As String
+            mailKey = mail.Subject & "|" & Format(mail.ReceivedTime, "yyyymmddhhnnss")
+            If copied.Exists(mailKey) Then Exit For
+            SyncNewItem mail, unified
+        End If
+    Next k
 End Sub
 
 Public Sub SyncNewItem(mail As Outlook.MailItem, unified As Outlook.Folder)
     Dim copyItem As Outlook.MailItem
     Set copyItem = mail.Copy
+    copyItem.Save      ' commit the copy before moving — prevents original deletion bug
     copyItem.Move unified
+    Set copyItem = Nothing
 End Sub
 
 Public Function GetUnifiedFolder() As Outlook.Folder
