@@ -5,7 +5,7 @@ A VBA macro for Outlook Classic that syncs emails from all account inboxes into 
 ## How It Works
 
 - On startup, watches every account's inbox using `WithEvents` — new mail is copied to the unified folder instantly
-- A periodic timer sweeps all inboxes every 2 minutes to catch anything missed
+- A periodic timer sweeps all inboxes every 5 minutes to catch anything missed
 - On first run, prompts you to pick the target folder; saves the selection to the Windows registry
 - Checks the 100 most recent emails per inbox on each sweep
 
