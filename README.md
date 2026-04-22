@@ -4,20 +4,20 @@ A VBA macro for Outlook Classic that syncs emails from all account inboxes into 
 
 ## How It Works
 
-* On startup, watches every account's inbox using `WithEvents` — new mail is copied to the unified folder instantly
-* A periodic timer sweeps all inboxes every 5 minutes to catch anything missed
-* On first run, prompts you to pick the target folder; saves the selection to the Windows registry
-* Checks the 100 most recent emails per inbox on each sweep
-* Snapshots inbox EntryIDs before processing — never mutates a live collection mid-loop
-* Writes a timestamped log file to `%USERPROFILE%\\UnifiedInbox.log` for troubleshooting
+- On startup, watches every account's inbox using `WithEvents` — new mail is copied to the unified folder instantly
+- A periodic timer sweeps all inboxes every 5 minutes to catch anything missed
+- On first run, prompts you to pick the target folder; saves the selection to the Windows registry
+- Checks the 100 most recent emails per inbox on each sweep
+- Snapshots inbox EntryIDs before processing — never mutates a live collection mid-loop
+- Writes a timestamped log file to `%USERPROFILE%\UnifiedInbox.log` for troubleshooting
 
 ## Files
 
-|File|Type|Purpose|
-|-|-|-|
-|`ThisOutlookSession`|Built-in|Startup/quit hooks|
-|`modUnifiedSync`|Module|Timer, sync logic, folder management, logging|
-|`clsInboxEvents`|Class Module|Per-inbox `WithEvents` watcher|
+| File | Type | Purpose |
+|------|------|---------|
+| `ThisOutlookSession` | Built-in | Startup/quit hooks |
+| `modUnifiedSync` | Module | Timer, sync logic, folder management, logging |
+| `clsInboxEvents` | Class Module | Per-inbox `WithEvents` watcher |
 
 ## Installation
 
@@ -32,33 +32,31 @@ A VBA macro for Outlook Classic that syncs emails from all account inboxes into 
 ## Code
 
 ### `ThisOutlookSession`
-
 ```vb
 Option Explicit
 
-Private Sub Application\_Startup()
+Private Sub Application_Startup()
     LogMsg "=== Outlook started ==="
-    LogMsg "Session stores count: " \& Application.Session.Stores.Count
+    LogMsg "Session stores count: " & Application.Session.Stores.Count
     InitWatchers
     StartTimer
     RunUnifiedSync
     LogMsg "Startup complete"
 End Sub
 
-Private Sub Application\_Quit()
+Private Sub Application_Quit()
     LogMsg "=== Outlook quitting ==="
     StopTimer
 End Sub
 ```
 
 ### `clsInboxEvents`
-
 ```vb
 Option Explicit
 
 Public WithEvents Items As Outlook.Items
 
-Private Sub Items\_ItemAdd(ByVal Item As Object)
+Private Sub Items_ItemAdd(ByVal Item As Object)
     If TypeOf Item Is Outlook.MailItem Then
         Dim unified As Outlook.Folder
         Set unified = GetUnifiedFolder()
@@ -72,7 +70,6 @@ End Sub
 ```
 
 ### `modUnifiedSync`
-
 ```vb
 Option Explicit
 
@@ -96,12 +93,12 @@ Public lastSync As Date
 
 Public Sub LogMsg(msg As String)
     Dim logPath As String
-    logPath = Environ("USERPROFILE") \& "\\UnifiedInbox.log"
+    logPath = Environ("USERPROFILE") & "\UnifiedInbox.log"
 
     Dim fileNum As Integer
     fileNum = FreeFile
     Open logPath For Append As #fileNum
-    Print #fileNum, Format(Now, "yyyy-mm-dd hh:nn:ss") \& " | " \& msg
+    Print #fileNum, Format(Now, "yyyy-mm-dd hh:nn:ss") & " | " & msg
     Close #fileNum
 End Sub
 
@@ -116,7 +113,7 @@ Public Sub InitWatchers()
     Dim w As clsInboxEvents
 
     Set ns = Application.Session
-    LogMsg "InitWatchers: " \& ns.Stores.Count \& " store(s) found"
+    LogMsg "InitWatchers: " & ns.Stores.Count & " store(s) found"
 
     For Each store In ns.Stores
         Set inbox = Nothing
@@ -125,16 +122,16 @@ Public Sub InitWatchers()
         On Error GoTo 0
 
         If Not inbox Is Nothing Then
-            LogMsg "  Watching inbox: " \& store.DisplayName
+            LogMsg "  Watching inbox: " & store.DisplayName
             Set w = New clsInboxEvents
             Set w.Items = inbox.Items
             watchers.Add w
         Else
-            LogMsg "  Skipped (no inbox): " \& store.DisplayName
+            LogMsg "  Skipped (no inbox): " & store.DisplayName
         End If
     Next store
 
-    LogMsg "InitWatchers complete, watchers: " \& watchers.Count
+    LogMsg "InitWatchers complete, watchers: " & watchers.Count
 End Sub
 
 ' ---------------------------------------------------------------------------
@@ -184,7 +181,7 @@ Public Sub RunUnifiedSync()
     LogMsg "RunUnifiedSync: finished"
 
 Cleanup:
-    If Err.Number <> 0 Then LogMsg "RunUnifiedSync ERROR: " \& Err.Description
+    If Err.Number <> 0 Then LogMsg "RunUnifiedSync ERROR: " & Err.Description
     isSyncRunning = False
 End Sub
 
@@ -208,7 +205,7 @@ Public Sub SyncAllInboxesToUnified()
 End Sub
 
 Public Sub SyncInbox(inbox As Outlook.Folder)
-    LogMsg "SyncInbox: " \& inbox.Parent.Name \& " (" \& inbox.Items.Count \& " items)"
+    LogMsg "SyncInbox: " & inbox.Parent.Name & " (" & inbox.Items.Count & " items)"
 
     Dim unified As Outlook.Folder
     Set unified = GetUnifiedFolder()
@@ -226,7 +223,7 @@ Public Sub SyncInbox(inbox As Outlook.Folder)
 
     Dim uItems As Outlook.Items
     Set uItems = unified.Items
-    uItems.Sort "\[ReceivedTime]", True
+    uItems.Sort "[ReceivedTime]", True
 
     Dim uLimit As Long
     uLimit = uItems.Count
@@ -239,14 +236,14 @@ Public Sub SyncInbox(inbox As Outlook.Folder)
         If TypeOf uItm Is Outlook.MailItem Then
             Dim uMail As Outlook.MailItem
             Set uMail = uItm
-            copied(uMail.Subject \& "|" \& Format(uMail.ReceivedTime, "yyyymmddhhnnss")) = True
+            copied(uMail.Subject & "|" & Format(uMail.ReceivedTime, "yyyymmddhhnnss")) = True
         End If
     Next j
 
     ' Snapshot inbox EntryIDs — never mutate a live collection while iterating
     Dim inboxItems As Outlook.Items
     Set inboxItems = inbox.Items
-    inboxItems.Sort "\[ReceivedTime]", True
+    inboxItems.Sort "[ReceivedTime]", True
 
     Dim entryIDs(99) As String
     Dim candidateCount As Long
@@ -273,16 +270,16 @@ Public Sub SyncInbox(inbox As Outlook.Folder)
 
         If Not mail Is Nothing Then
             Dim mailKey As String
-            mailKey = mail.Subject \& "|" \& Format(mail.ReceivedTime, "yyyymmddhhnnss")
+            mailKey = mail.Subject & "|" & Format(mail.ReceivedTime, "yyyymmddhhnnss")
             If copied.Exists(mailKey) Then
-                LogMsg "  Hit already-synced item at k=" \& k \& ", stopping"
+                LogMsg "  Hit already-synced item at k=" & k & ", stopping"
                 Exit For
             End If
             SyncNewItem mail, unified
         End If
     Next k
 
-    LogMsg "SyncInbox done: processed " \& k \& " candidate(s)"
+    LogMsg "SyncInbox done: processed " & k & " candidate(s)"
 End Sub
 
 Public Sub SyncNewItem(mail As Outlook.MailItem, unified As Outlook.Folder)
@@ -316,7 +313,7 @@ Public Function GetUnifiedFolder() As Outlook.Folder
         Set cachedFolder = ns.GetFolderFromID(folderID, storeID)
         On Error GoTo 0
         If Not cachedFolder Is Nothing Then
-            LogMsg "GetUnifiedFolder: loaded from registry -> " \& cachedFolder.Name
+            LogMsg "GetUnifiedFolder: loaded from registry -> " & cachedFolder.Name
             Set GetUnifiedFolder = cachedFolder
             Exit Function
         End If
@@ -336,7 +333,7 @@ Public Function GetUnifiedFolder() As Outlook.Folder
 
     SaveSetting "UnifiedInbox", "Config", "FolderID", cachedFolder.EntryID
     SaveSetting "UnifiedInbox", "Config", "StoreID", cachedFolder.StoreID
-    LogMsg "GetUnifiedFolder: saved new folder -> " \& cachedFolder.Name
+    LogMsg "GetUnifiedFolder: saved new folder -> " & cachedFolder.Name
 
     Set GetUnifiedFolder = cachedFolder
 End Function
@@ -356,7 +353,7 @@ Then restart Outlook — it will prompt you to pick again.
 
 ### Log file
 
-Every run writes to `%USERPROFILE%\\UnifiedInbox.log` (e.g. `C:\\Users\\YourName\\UnifiedInbox.log`). Open it in Notepad after a problematic startup.
+Every run writes to `%USERPROFILE%\UnifiedInbox.log` (e.g. `C:\Users\YourName\UnifiedInbox.log`). Open it in Notepad after a problematic startup.
 
 A healthy startup looks like this:
 
@@ -380,26 +377,25 @@ A healthy startup looks like this:
 
 ### Common problems
 
-|Symptom in log|Likely cause|Fix|
-|-|-|-|
-|`stores count: 0` or `stores count: 1`|Outlook not fully loaded when macro fired|Outlook takes a few seconds to connect accounts on startup; the 5-minute timer sweep will catch up automatically|
-|`watchers: 0`|No inbox folders found across any store|Check that accounts are fully configured and connected|
-|`GetUnifiedFolder: registry entry found but folder lookup failed`|Unified folder was deleted or moved|Run `DeleteSetting "UnifiedInbox", "Config"` in the Immediate Window and restart|
-|`RunUnifiedSync: already running, skipped`|A previous sync is still in progress|Normal if the inbox is large; subsequent timer runs will catch up|
-|`RunUnifiedSync ERROR: ...`|Exception during sync|Share the full error description for diagnosis|
-|No log file created at all|Macros not enabled|File → Options → Trust Center → Macro Settings → Enable all macros|
+| Symptom in log | Likely cause | Fix |
+|---|---|---|
+| `stores count: 0` or `stores count: 1` | Outlook not fully loaded when macro fired | Outlook takes a few seconds to connect accounts on startup; the 5-minute timer sweep will catch up automatically |
+| `watchers: 0` | No inbox folders found across any store | Check that accounts are fully configured and connected |
+| `GetUnifiedFolder: registry entry found but folder lookup failed` | Unified folder was deleted or moved | Run `DeleteSetting "UnifiedInbox", "Config"` in the Immediate Window and restart |
+| `RunUnifiedSync: already running, skipped` | A previous sync is still in progress | Normal if the inbox is large; subsequent timer runs will catch up |
+| `RunUnifiedSync ERROR: ...` | Exception during sync | Share the full error description for diagnosis |
+| No log file created at all | Macros not enabled | File → Options → Trust Center → Macro Settings → Enable all macros |
 
 ### Sending logs to support
 
-1. Open `%USERPROFILE%\\UnifiedInbox.log` in Notepad
+1. Open `%USERPROFILE%\UnifiedInbox.log` in Notepad
 2. Copy the lines from the startup session where the problem occurred (starting from `=== Outlook started ===`)
 3. Share those lines — do not share the entire file if it contains subject lines you want to keep private
 
 ## Notes
 
-* Emails are **copied** (not moved) from each inbox into the unified folder
-* The unified folder can be in any account or a local PST
-* Works with any number of accounts (Exchange, IMAP, POP3)
-* The periodic sweep stops scanning an inbox as soon as it hits an already-synced email — if you manually delete emails from the unified folder they will not be re-synced on the next sweep (only future new arrivals are caught via `ItemAdd`)
-* Requires macros to be enabled: File → Options → Trust Center → Macro Settings → Enable all macros
-
+- Emails are **copied** (not moved) from each inbox into the unified folder
+- The unified folder can be in any account or a local PST
+- Works with any number of accounts (Exchange, IMAP, POP3)
+- The periodic sweep stops scanning an inbox as soon as it hits an already-synced email — if you manually delete emails from the unified folder they will not be re-synced on the next sweep (only future new arrivals are caught via `ItemAdd`)
+- Requires macros to be enabled: File → Options → Trust Center → Macro Settings → Enable all macros
